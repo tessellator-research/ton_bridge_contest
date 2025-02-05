@@ -1,0 +1,153 @@
+#include "imports/stdlib.fc";
+#include "imports/hashmapaug.fc";
+
+{-
+    transaction_check_info#_       checker_address:MsgAddress
+                                   block_root_hash:uint256
+                                   transaction:^Transaction                          = TransactionCheckInfo;
+
+    storage#_                      lite_client_address:MsgAddress
+                                   pending_checks:(HashmapE 64 TransactionCheckInfo) = Storage;
+
+    basic_block_proof#_            query_id:uint64
+                                   block:^Block
+                                   signatures:(HashmapE 16 ValidatorSignature)
+                                   file_hash:uint256                                 = BlockProof;
+
+    check_transaction#91d555f7     proof:BlockProof
+                                   account_dict_key:uint256
+                                   transaction_dict_key:uint256
+                                   transaction:^Transaction                          = InternalMsgBody;
+
+    valid_block#ce02b807           query_id:uint64
+                                   root_hash:uint256                                 = InternalMsgBody;
+-}
+
+const int errors::no_such_transaction    = 110;
+const int errors::unauthorized_request   = 111;
+const int errors::no_such_pending_entry  = 112;
+
+(slice, cell) get_storage() impure inline_ref {
+    slice c4_cs = get_data().begin_parse();
+
+    slice lite_client_address = c4_cs~load_msg_addr();
+    cell pending_checks = c4_cs~load_dict();
+
+    return (lite_client_address, pending_checks);
+}
+
+() set_storage(slice lite_client_address, cell pending_checks) impure {
+    set_data(begin_cell()
+                .store_slice(lite_client_address)
+                .store_dict(pending_checks)
+             .end_cell());
+    return ();
+}
+
+() reply_with_message(slice addr, slice message) impure {
+    cell msg = begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(addr)
+                .store_coins(0)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_slice(message)
+               .end_cell();
+    send_raw_message(msg, 64);
+    return ();
+}
+
+() recv_internal(cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    if (flags & 1) {
+        return ();
+    }
+
+    ;; acquiring pseudorandom 64-bit unsigned int for lite-client's "check_block" function
+    int query_id = in_msg_body.slice_hash() >> 192;
+
+    int opcode = in_msg_body~load_uint(32);
+
+    slice sender_address = cs~load_msg_addr();
+
+    if opcode == 0x91d555f7 {
+        cell block = in_msg_body~load_ref();
+        cell signatures = in_msg_body~load_dict();
+        int file_hash = in_msg_body~load_uint(256);
+
+        int root_hash = block.cell_hash();
+
+        slice block_cs = block.begin_parse();
+
+        block_cs~load_uint(32);  ;; Block prefix
+
+        block_cs~load_uint(32);  ;; global_id
+        block_cs~load_ref();  ;; block_info
+        block_cs~load_ref();  ;; value_flow
+        block_cs~load_ref();  ;; state_update
+        slice extra = block_cs~load_ref().begin_parse();
+        extra~load_uint(32);  ;; McBlockExtra prefix
+        extra~load_ref();  ;; in_msg_descr
+        extra~load_ref();  ;; out_msg_descr
+        cell account_blocks = extra~load_ref();  ;; account_blocks
+
+        int account_dict_key = in_msg_body~load_uint(256);
+        int transaction_dict_key = in_msg_body~load_uint(64);
+        cell transaction_cell = in_msg_body~load_ref();
+        int do_validators_switch_for_check_block? = in_msg_body~load_uint(1);
+
+        slice account_blocks_cs = account_blocks.begin_parse();
+        account_blocks_cs~load_uint(1);
+        cell account_blocks_dict = account_blocks_cs~load_ref();
+        slice account_blocks_dict_cs = account_blocks_dict.begin_parse();
+        var (account, found_account?) = account_blocks_dict_cs.hashmap_aug_get?(256, account_dict_key);
+
+        throw_unless(errors::no_such_transaction, found_account?);
+
+        account~load_bits(4 + 256 + 4);  ;; AccountBlock prefixes
+        var (transaction_cs, found_transaction?) = account.hashmap_aug_get?(64, transaction_dict_key);
+
+        throw_unless(errors::no_such_transaction, found_transaction?);
+
+        cell transaction = transaction_cs~load_ref();  ;; Transaction
+
+        throw_unless(errors::no_such_transaction, cell_hash(transaction_cell) == cell_hash(transaction));
+
+        ;; Saving to pendings
+        var (lite_client_address, pending_checks) = get_storage();
+        pending_checks~udict_set(64, query_id, begin_cell().store_uint(root_hash, 256).store_slice(sender_address).store_ref(transaction).end_cell().begin_parse());
+
+        set_storage(lite_client_address, pending_checks);
+
+        ;; Querying the lite client to check the block validity
+        return reply_with_message(lite_client_address, begin_cell().store_uint(0x8eaa9d76, 32).store_uint(query_id, 64).store_ref(block).store_dict(signatures).store_uint(file_hash, 256).store_uint(do_validators_switch_for_check_block?, 1).end_cell().begin_parse());
+    }
+
+    if opcode == 0xce02b807 {
+        var (lite_client_address, pending_checks) = get_storage();
+
+        throw_unless(errors::unauthorized_request, sender_address.slice_hash() == lite_client_address.slice_hash());
+
+        int query_id = in_msg_body~load_uint(64);
+
+        (slice transaction_check_info, _) = pending_checks.udict_get?(64, query_id);
+
+        int root_hash' = in_msg_body~load_uint(256);
+        int root_hash = transaction_check_info~load_uint(256);
+        throw_unless(errors::no_such_pending_entry, root_hash == root_hash');
+        slice checker_address = transaction_check_info~load_msg_addr();
+        cell transaction = transaction_check_info~load_ref();
+
+        pending_checks~udict_delete?(64, query_id);
+
+        set_storage(lite_client_address, pending_checks);
+
+        ;; Replying to whoever called "check_transaction"
+        return reply_with_message(checker_address, begin_cell().store_uint(0x756adff1, 32).store_ref(transaction).end_cell().begin_parse());
+    }
+    
+    return ();
+}
+
+;; TODO: If the contract's received valid transaction with tampered block, the check_block function should bounce and the message must be handled to remove the transaction from pending list (pending_checks field)

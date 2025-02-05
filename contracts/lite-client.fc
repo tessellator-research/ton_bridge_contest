@@ -1,0 +1,253 @@
+#include "imports/stdlib.fc";
+
+{-
+    storage#_                  current_validators_utime_until:uint32
+                               current_validators_total_weight:uint64
+                               current_validators:(HashmapE 16 ValidatorDescr)
+                               next_validators_utime_until:uint32
+                               next_validators_total_weight:uint64
+                               next_validators:(HashmapE 16 ValidatorDescr)
+                               latest_known_epoch_block_seqno:uint32        = Storage;
+
+    basic_block_proof#_        query_id:uint64
+                               block:^Block
+                               signatures:(HashmapE 16 ValidatorSignature)
+                               file_hash:uint256                            = BlockProof;
+
+    new_key_block#11a78ffe     proof:BlockProof                             = InternalMsgBody;
+
+    check_block#8eaa9d76       proof:BlockProof                             = InternalMsgBody;
+-}
+
+const int errors::not_mc_block                           = 102;
+const int errors::not_key_block                          = 103;
+const int errors::faulty_signature                       = 104;
+const int errors::weak_signatures                        = 105;
+const int errors::no_next_validators                     = 106;
+const int errors::expected_next_epoch_block              = 107;
+const int errors::next_total_vals_less_than_main_vals    = 108;
+const int errors::expected_known_epoch_block             = 109;
+
+(int, int, cell, int, int, cell, int) get_storage() impure {
+    slice c4_cs = get_data().begin_parse();
+    int current_validators_utime_until = c4_cs~load_uint(32);
+    int current_validators_total_weight = c4_cs~load_uint(64);
+    cell current_validators = c4_cs~load_dict();
+
+    int next_validators_utime_until = c4_cs~load_uint(32);
+    int next_validators_total_weight = c4_cs~load_uint(64);
+    cell next_validators = c4_cs~load_dict();
+
+    int latest_known_epoch_block_seqno = c4_cs~load_uint(32);
+    return (current_validators_utime_until, current_validators_total_weight, current_validators,
+            next_validators_utime_until,    next_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno);
+}
+
+() set_storage(int current_validators_utime_until, int current_validators_total_weight, cell current_validators, int next_validators_utime_until, int next_validators_total_weight, cell next_validators, int latest_known_epoch_block_seqno) impure {
+    cell c4 = begin_cell()
+                .store_uint(current_validators_utime_until, 32)
+                .store_uint(current_validators_total_weight, 64)
+                .store_dict(current_validators)
+                .store_uint(next_validators_utime_until, 32)
+                .store_uint(next_validators_total_weight, 64)
+                .store_dict(next_validators)
+                .store_uint(latest_known_epoch_block_seqno, 32)
+              .end_cell();
+    set_data(c4);
+    return ();
+}
+
+(int, int, cell, int, int, cell, int) get_validators_info() method_id {
+    return get_storage();
+}
+
+() reply_with_message(slice addr, slice message) impure {
+    cell msg = begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(addr)
+                .store_coins(0)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_slice(message)
+               .end_cell();
+    send_raw_message(msg, 64);
+    return ();
+}
+
+() recv_internal(cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    if (flags & 1) {
+        return ();
+    }
+
+    int opcode = in_msg_body~load_uint(32);
+
+    ifnot (opcode == 0x11a78ffe) | (opcode == 0x8eaa9d76) {
+        return ();
+    }
+
+    int query_id = in_msg_body~load_uint(64);
+
+    cell block = in_msg_body~load_ref();
+    cell signatures = in_msg_body~load_dict();
+    int file_hash = in_msg_body~load_uint(256);
+
+    int do_validators_switch_for_check_block? = in_msg_body~load_uint(1);
+
+    int root_hash = block.cell_hash();
+
+    slice block_cs = block.begin_parse();
+
+    block_cs~load_uint(32);  ;; Block prefix
+
+    block_cs~load_uint(32);  ;; global_id
+    cell block_info = block_cs~load_ref();
+    slice block_info_cs = block_info.begin_parse();
+    block_info_cs~load_uint(32);  ;; BlockInfo prefix
+    block_info_cs~load_uint(32);  ;; version
+
+    throw_if(errors::not_mc_block, block_info_cs~load_bool());
+    block_info_cs~load_uint(1);  ;; after_merge
+    block_info_cs~load_uint(1);  ;; before_split
+    block_info_cs~load_uint(1);  ;; after_split
+    block_info_cs~load_bool();  ;; want_split
+    block_info_cs~load_bool();  ;; want_merge
+    block_info_cs~load_bool();  ;; key_block
+    block_info_cs~load_uint(1);  ;; vert_seqno_incr
+    block_info_cs~load_uint(8);  ;; flags
+    
+    int block_seqno = block_info_cs~load_uint(32);
+
+    var (current_validators_utime_until, current_validators_total_weight, current_validators,
+            next_validators_utime_until,    next_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno) = get_storage();
+
+    throw_unless(errors::expected_known_epoch_block, latest_known_epoch_block_seqno <= block_seqno);
+
+    int utime_now = now();
+
+    if (~ dict_empty?(next_validators)) & (((utime_now > current_validators_utime_until) & (opcode == 0x11a78ffe)) | ((opcode == 0x8eaa9d76) & do_validators_switch_for_check_block?)) {
+        ;; Current validators are outdated (the epoch is over). Interchanging current_validators with contract's
+        ;; known next_validators (not ones that contract has just received). This logic is needed to verify the
+        ;; received block from the new epoch which contains next_validators (i.e. when one calls "new_key_block")
+        current_validators_utime_until = next_validators_utime_until;
+        current_validators_total_weight = next_validators_total_weight;
+        current_validators = next_validators;
+
+        next_validators_utime_until = 0;
+        next_validators_total_weight = 0;
+        next_validators = new_dict();
+    }
+
+    slice message = begin_cell().store_uint(0x706e0bc5, 32).store_uint(root_hash, 256).store_uint(file_hash, 256).end_cell().begin_parse();
+
+    int signed_weight = 0;
+    (int validator_index, slice corresponding_validator_signature, int exists_next_dict_entry?) = signatures.udict_get_next?(16, -1);
+    while exists_next_dict_entry? {
+        (slice validator_descr, _) = current_validators.udict_get?(16, validator_index);
+        {-
+            ed25519_pubkey#8e81278a pubkey:bits256 = SigPubKey;
+            validator#53 public_key:SigPubKey weight:uint64 = ValidatorDescr;
+            validator_addr#73 public_key:SigPubKey weight:uint64 adnl_addr:bits256 = ValidatorDescr;
+        -}
+        validator_descr~load_uint(8);   ;; prefix of ValidatorDescr
+        validator_descr~load_uint(32);  ;; prefix of SigPubKey
+        int validator_pubkey = validator_descr~load_uint(256);
+        throw_unless(errors::faulty_signature, check_data_signature(message, corresponding_validator_signature, validator_pubkey));
+
+        signed_weight += validator_descr~load_uint(64);
+
+        (validator_index, corresponding_validator_signature, exists_next_dict_entry?) = signatures.udict_get_next?(16, validator_index);
+    }
+
+    throw_unless(errors::weak_signatures, signed_weight * 3 > current_validators_total_weight * 2);
+
+    slice sender_address = cs~load_msg_addr();
+    
+    ;; The logic of "check_block" function is a part of logic of "new_key_block" function; So far, 
+    ;; we've assumed that the user's called "check_block" function.
+    if opcode == 0x8eaa9d76 {
+        return reply_with_message(sender_address, begin_cell().store_uint(0xce02b807, 32).store_uint(query_id, 64).store_uint(root_hash, 256).end_cell().begin_parse());
+    }
+    ;; else, opcode is 0x11a78ffe, which means "new_key_block" has been called
+
+    block_cs~load_ref();  ;; value_flow
+    block_cs~load_ref();  ;; state_update
+    slice extra = block_cs~load_ref().begin_parse();
+    extra~load_uint(32);  ;; BlockExtra prefix
+    extra~load_ref();  ;; in_msg_descr
+    extra~load_ref();  ;; out_msg_descr
+    extra~load_ref();  ;; account_blocks
+    extra~load_bits(256);  ;; rand_seed
+    extra~load_bits(256);  ;; created_by
+    slice custom = extra~load_maybe_ref().begin_parse();
+
+    custom~load_uint(16);  ;; McBlockExtra prefix
+
+    throw_unless(errors::not_key_block, custom~load_bool());
+
+    custom~load_maybe_ref(); ;; shard_hashes
+
+    int shardfees_non_empty = custom~load_bool();
+    if (shardfees_non_empty) {
+        custom~load_ref();
+    }
+
+    int size = custom~load_uint(4); custom~load_uint(size * 8);    ;; ExtraCurrencyCollection
+    custom~load_maybe_ref();
+
+    int size = custom~load_uint(4); custom~load_uint(size * 8);    ;; ExtraCurrencyCollection
+    custom~load_maybe_ref();
+
+    custom~load_ref();  {-
+                        ^[ prev_blk_signatures:(HashmapE 16 CryptoSignaturePair)
+                            recover_create_msg:(Maybe ^InMsg)
+                            mint_msg:(Maybe ^InMsg) ]
+                        -}
+    custom~load_uint(256); ;; config_addr
+
+    slice config_params_slice = begin_cell().store_maybe_ref(custom~load_ref()).end_cell().begin_parse();
+    cell config_params_dict = config_params_slice~load_dict();
+
+    (cell config_param_36, int contains_next_validators?) = config_params_dict.udict_get_ref?(32, 36);  ;; next_validators
+
+    throw_unless(errors::no_next_validators, contains_next_validators?);
+
+    slice config_param_36 = config_param_36.begin_parse();
+    int next_validators_type = config_param_36~load_uint(8);
+    int next_validators_utime_since = config_param_36~load_uint(32);
+    next_validators_utime_until = config_param_36~load_uint(32);
+
+    ;; We presume that relayer (or user) sends consequent key blocks, and throw error if that is not the case.
+    ;; Chronological order is required for validating blocks with information about new validators, which have
+    ;; been signed by previous validators (they are saved in contract's current_validators field)
+    throw_unless(errors::expected_next_epoch_block, current_validators_utime_until <= next_validators_utime_since);
+
+    int total_validators_quantity = config_param_36~load_uint(16);
+    int main_validators_quantity = config_param_36~load_uint(16);
+
+    throw_if(errors::next_total_vals_less_than_main_vals, total_validators_quantity < main_validators_quantity);  ;; checking TLB constraints
+
+    ;; Performed sanity checks on next_validators. Updating contract's next_validators field
+    if next_validators_type == 0x11 {
+        slice next_validators_slice = begin_cell().store_maybe_ref(config_param_36~load_ref()).end_cell().begin_parse();
+        next_validators = next_validators_slice~load_dict();
+        ;; validators#11 does not contain "total_weight" field. It is calculated below
+        next_validators_total_weight = 0;
+        (int validator_index, slice validator_descr, int flag) = next_validators.udict_get_next?(16, -1);
+        while flag != 0 {
+            validator_descr~load_uint(8);   ;; prefix of ValidatorDescr
+            validator_descr~load_uint(32);  ;; prefix of SigPubKey
+            validator_descr~load_uint(256);  ;; SigPubKey
+            next_validators_total_weight += validator_descr~load_uint(64);
+            (validator_index, validator_descr, flag) = next_validators.udict_get_next?(16, validator_index);
+        }
+    } elseif next_validators_type == 0x12 {
+        next_validators_total_weight = config_param_36~load_uint(64);
+        next_validators = config_param_36~load_dict();
+    }
+
+    set_storage(current_validators_utime_until, current_validators_total_weight, current_validators, next_validators_utime_until, next_validators_total_weight, next_validators, block_seqno);
+
+    return reply_with_message(sender_address, begin_cell().store_uint(0xff8ff4e1, 32).store_uint(query_id, 64).store_uint(root_hash, 256).end_cell().begin_parse());
+}

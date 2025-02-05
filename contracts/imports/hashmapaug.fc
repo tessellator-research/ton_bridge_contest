@@ -1,0 +1,68 @@
+(int) ubitsize(int x) asm "UBITSIZE";
+
+(slice, (int)) ~deserialize_unary(slice ser) inline_ref {
+    int n = 0;
+    int r = ser~load_uint(1);
+    while r {
+        n += 1;
+        r = ser~load_uint(1);
+    }
+    return (ser, (n));
+}
+
+(slice, (int, int)) ~deserialize_hml(slice ser, int m) inline_ref {
+    int k = ser~load_uint(1);
+    int s = 0;
+    int n = 0;
+    if k {
+        k = (k << 1) | ser~load_uint(1);
+    }
+    if (k == 0) {
+        n = ser~deserialize_unary();
+        s = ser~load_uint(n);
+    } elseif (k == 2) {
+        int l = max(1, ubitsize(m));
+        n = ser~load_uint(l);
+        s = ser~load_uint(n);
+    } else {
+        int l = max(1, ubitsize(m));
+        int v = ser~load_bool();
+        n = ser~load_uint(l);
+        if v {
+            s = (1 << n) - 1;
+        }
+    }
+    return (ser, (n, s));
+}
+
+(slice, (int)) ~deserialize_hashmap_aug_node(slice cs, int m, int prefix, int key_to_look_for) inline_ref {
+    if (m == 0) {  ;; ahmn_leaf
+        if prefix == key_to_look_for {
+            return (cs, (-1));
+        }
+    } else {  ;; ahmn_fork
+        {
+            cell cs'_ref = cs~load_ref();
+            slice cs' = cs'_ref.begin_parse();
+            var (l, suffix) = cs'~deserialize_hml(m - 1);
+            if cs'~deserialize_hashmap_aug_node(m - 1 - l, ((prefix << 1) << l) | suffix, key_to_look_for) {
+                return (cs', (-1));
+            }
+        }
+        {
+            cell cs'_ref = cs~load_ref();
+            slice cs' = cs'_ref.begin_parse();
+            var (l, suffix) = cs'~deserialize_hml(m - 1);
+            if cs'~deserialize_hashmap_aug_node(m - 1 - l, (((prefix << 1) | 1) << l) | suffix, key_to_look_for) {
+                return (cs', (-1));
+            }
+        }
+    }
+    return (cs, (0));
+}
+
+(slice, int) hashmap_aug_get?(slice cs, int key_length, int key_to_look_for) inline_ref {
+    var (l, suffix) = cs~deserialize_hml(key_length);
+    (slice value, (int found?)) = ~deserialize_hashmap_aug_node(cs, key_length - l, suffix, key_to_look_for);
+    return (value, found?);
+}
