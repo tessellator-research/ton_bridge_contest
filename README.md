@@ -12,29 +12,24 @@ We present a complete, trustless and permissionless bridge between Fastnet and T
 
 
 ### Preliminaries:
-Because at the time of the contest Fastchain does not contain any shards, the parseShards function in TonLiteClient throws an error during initialization. To work around that, go to node_modules/ton-lite-client/dist/parser/parseShards.js and change
-"throw Error('Invalid slice');" to "return new Map();" in the "parseShards" function.
+Because at the time of the contest Fastchain does not contain any shards, the parseShards function in TonLiteClient throws an error during initialization. To work around that, go to `node_modules/ton-lite-client/dist/parser/parseShards.js` and change `throw Error('Invalid slice');` to `return new Map();` in the `parseShards` function.
 
 ### Test instructions:
-```
-export FIFTPATH="/path/to/ton/binaries/lib"; yarn test
-```
 
-This sets enviroment variable FIFTPATH to "" and runs contract tests.
+`export FIFTPATH="/path/to/ton/binaries/lib"; yarn test`
+
+This sets enviroment variable FIFTPATH to "/path/to/ton/binaries/lib" and runs contract tests.
 
 ### Build instructions:
 First, set `WALLET_MNEMONIC` and `WALLET_VERSION` variables. For example:
-```
-export WALLET_MNEMONIC="crop drama dizzy mesh case claw bunker again share divide sick scrub hen retreat token wrap razor endorse zebra mention system clerk reopen stumble"; export WALLET_VERSION="v3r2";
-```
+
+`export WALLET_MNEMONIC="crop drama dizzy mesh case claw bunker again share divide sick scrub hen retreat token wrap razor endorse zebra mention system clerk reopen stumble"; export WALLET_VERSION="v3r2";`
 
 Run these two commands in the following order: 
-```
-yarn blueprint run deployLiteClientToTestnet --testnet --mnemonic
-```
-```
-yarn blueprint run deployTransactionCheckerToTestnet --testnet --mnemonic
-```
+
+`yarn blueprint run deployLiteClientToTestnet --testnet --mnemonic`
+
+`yarn blueprint run deployTransactionCheckerToTestnet --testnet --mnemonic`
 
 These commands deploy lite-client and transaction-checker to the testnet, to check Fastnet's blocks and transactions on Testnet.
 
@@ -43,6 +38,7 @@ The order matters, since transaction-checker contains lite-client's address that
 
 ### Contract addresses:
 Lite-client contract address on testnet: `kQCnIFJpXIQMU1CoGGjnZg4nRfga7V-rOr8srJQmUMlh8rtR`
+
 Transaction-checker contract address on testnet: `kQBiecZOMfLQ7ckhSyhmQjofjARM7cvuJwH32iy_-e6eaHnf`
 
 Fastnet contracts could not be deployed because the faucet did not provide sufficient coins.
