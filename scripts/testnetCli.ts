@@ -20,8 +20,8 @@ let wallet_keys: KeyPair;
 let wallet_contract: OpenedContract<WalletContractV3R2>;
 let wallet_mnemonic: string[] = [];
 
-const lite_client_testnet_addr = Address.parseFriendly("kQCnIFJpXIQMU1CoGGjnZg4nRfga7V-rOr8srJQmUMlh8rtR");
-const transaction_checker_testnet_addr = Address.parseFriendly("kQBiecZOMfLQ7ckhSyhmQjofjARM7cvuJwH32iy_-e6eaHnf");
+const lite_client_testnet_addr = Address.parseFriendly("kQAbPU_446k6HSRfgS5rSDMzVYeufu3TmX0AkjBAdPXIHX_b");
+const transaction_checker_testnet_addr = Address.parseFriendly("kQDCHYRPSYb2p7c9vaTB80-jCshBeLsIX29rUbKl6qPK_5XT");
 
 let testnet_ls_pair: LSPair;
 let fastnet_ls_pair: LSPair;
@@ -78,7 +78,7 @@ async function wallet_send_tx(value: bigint, payload: Cell, address: Address = l
                 body: payload
             })
         ],
-        sendMode: 0
+        sendMode: 1
     });
     if (result === undefined) {
         let cur_seqno = current_wallet_seqno;
@@ -271,7 +271,8 @@ program
             return await terminate(11);
         }
 
-        const { block_signatures, account_dict_key, transaction_dict_key, transaction_cell, do_validators_switch_for_check_block } = await fetch_block_and_transaction_by_seqno(fastnet_ls_pair, seqno, block_raw, root_hash, file_hash, current_validators_total_weight, current_validators, next_validators_total_weight, next_validators, BigInt("0x" + tx_hash));
+        
+        const { block_signatures, account_dict_key, transaction_dict_key, transaction_cell, do_validators_switch_for_check_block } = await fetch_block_and_transaction_by_seqno(fastnet_ls_pair, seqno, current_validators_total_weight, current_validators, next_validators_total_weight, next_validators, BigInt("0x" + tx_hash));
 
         const result = await wallet_send_tx(toNano("0.2"), beginCell()
                                                             .storeUint(0x91d555f7, 32)

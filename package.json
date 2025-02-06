@@ -1,5 +1,5 @@
 {
-    "name": "testingtvm16jan",
+    "name": "ton_bridge_contest",
     "version": "0.0.1",
     "scripts": {
         "start": "blueprint run",

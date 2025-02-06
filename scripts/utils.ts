@@ -7,6 +7,7 @@ import { signVerify } from "@ton/crypto";
 import { parse_hashmap_aug } from "./hashmapaug";
 import { read_raw_mc_block, read_signatures, save_raw_mc_block, save_signatures } from "./cache";
 import { promises as fs } from "fs";
+import { exit } from "process";
 
 export type LSPair = { engine: LiteEngine, client: LiteClient, network: "testnet" | "fastnet" };
 
@@ -99,6 +100,7 @@ export async function get_node_id_short(pubkey: Buffer) {
 }
 
 export async function get_recent_proper_key_blocks(ls_pair: LSPair, quantity=5) {
+    console.log("Getting recent key blocks with new validators...")
     const mc_info = (await ls_pair.client.getMasterchainInfo()).last;
     const mc_seqno = mc_info.seqno;
     const mc_root_hash = mc_info.rootHash;
@@ -106,7 +108,7 @@ export async function get_recent_proper_key_blocks(ls_pair: LSPair, quantity=5) 
     const parsed_mc_block = await parse_block_raw(await get_block_raw(ls_pair, mc_seqno, mc_root_hash, mc_file_hash, -1, "-9223372036854775808"));
     let last_key_block_seqno = parsed_mc_block.info.prev_key_block_seqno;
     let proper_blocks_seqnos = [];
-    for (let i = 0; i < quantity * 2; i++) {
+    while (proper_blocks_seqnos.length < quantity) {
         await sleep(150);
         const block_i = await get_mc_block_by_seqno(ls_pair, last_key_block_seqno);
         if (block_i.extra.custom.config.config.map.get("24")) {
@@ -203,13 +205,13 @@ export function remove_most_significant_signers(validators: any, subset: bigint[
     return significant;
 }
 
-export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqno: number, block_raw: Buffer | null, root_hash: Buffer | null, file_hash: Buffer | null, current_validators_total_weight: bigint, current_validators_dict: any, next_validators_total_weight: bigint, next_validators_dict: any, tx_hash: bigint = 0n) {
+export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqno: number, current_validators_total_weight: bigint, current_validators_dict: any, next_validators_total_weight: bigint, next_validators_dict: any, tx_hash: bigint = 0n) {
     const { signatures, workchain, shard } = (await get_block_signatures(ls_pair, seqno))!;
 
     const root_file_hashes = (await get_block_root_and_file_hashes(ls_pair, seqno, workchain, shard))!;
-    root_hash = root_file_hashes.root_hash;
-    file_hash = root_file_hashes.file_hash;
-    block_raw = (await get_block_raw(ls_pair, seqno, root_hash, file_hash, workchain, shard))!;
+    const root_hash = root_file_hashes.root_hash;
+    const file_hash = root_file_hashes.file_hash;
+    const block_raw = (await get_block_raw(ls_pair, seqno, root_hash, file_hash, workchain, shard))!;
     
     const block_cell = Cell.fromBoc(block_raw)[0];
     
@@ -276,13 +278,6 @@ export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqn
         }
     }
 
-    // console.log("current_validators_total_weight", current_validators_total_weight);
-    // console.log("next_validators_total_weight", next_validators_total_weight);
-
-    // const actual_validators_dict = Array.from(block_parsed.extra.custom.config.config.map.get("22").cur_validators.list.map.entries()) as any;
-
-    // const actual_validators_total_weight = BigInt(block_parsed.extra.custom.config.config.map.get("22").cur_validators.total_weight.toString(10));
-
     let block_signatures_dict_serialized = Dictionary.empty(
         Dictionary.Keys.BigUint(16),
         Dictionary.Values.Buffer(64),
@@ -306,7 +301,7 @@ export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqn
         }
 
         if (coincided_node_id_shorts < signatures.length) {
-            console.log("Making a switch!");
+            console.log("Making a switch!", coincided_node_id_shorts);
             do_validators_switch_for_check_block = true;
             current_validators_dict = next_validators_dict;
             current_validators_total_weight = next_validators_total_weight;
@@ -353,7 +348,7 @@ export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqn
             console.log("Trying to get signatures with stronger signers...");
             // There's a chance of lite server returning signatures from underpowered signers. In this case
             // we try to obtain a signature set with stronger signers by querying the lite server once again.
-            return await fetch_block_and_transaction_by_seqno(ls_pair, seqno, block_raw, root_hash, file_hash, current_validators_total_weight, current_validators_dict, next_validators_total_weight, next_validators_dict, tx_hash);
+            return await fetch_block_and_transaction_by_seqno(ls_pair, seqno, current_validators_total_weight, current_validators_dict, next_validators_total_weight, next_validators_dict, tx_hash);
         }
     }
 
@@ -626,6 +621,8 @@ export async function fetch_contract_setup_info(ls_pair: LSPair, seqno: number) 
             return await fetch_contract_setup_info(ls_pair, seqno);
         }
     }
+
+    console.log(`Setup backed with ${signatures.length} validators!`);
 
     return {
         block: block_cell,

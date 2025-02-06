@@ -35,6 +35,7 @@ export class TransactionCheckerContract implements Contract {
 
     static async createFromConfig(lite_client_address: Address, workchain = 0) {
         const data = beginCell()
+                        .storeUint(0n, 64)
                         .storeAddress(lite_client_address)
                         .storeDict(Dictionary.empty(Dictionary.Keys.BigUint(64), Dictionary.Values.Cell()), Dictionary.Keys.BigUint(64), Dictionary.Values.Cell())
                     .endCell();
@@ -44,7 +45,7 @@ export class TransactionCheckerContract implements Contract {
         return new TransactionCheckerContract(contractAddress(workchain, init), init);
     }
 
-    async sendDeployTransactionChecker(provider: ContractProvider, via: Sender, value: bigint, lite_client_address: Address) {
+    async sendDeployTransactionChecker(provider: ContractProvider, via: Sender, lite_client_address: Address, value: bigint) {
         await provider.internal(via, {
             value,
             sendMode: SendMode.PAY_GAS_SEPARATELY,
@@ -57,8 +58,8 @@ export class TransactionCheckerContract implements Contract {
 
     async sendCheckTransactionInMcBlock(provider: ContractProvider, via: Sender, arbitrary_block: { block: Cell, signatures: any, file_hash: bigint, account_dict_key: bigint, transaction_dict_key: bigint, transaction_cell: Cell, do_validators_switch_for_check_block: boolean }) {
         await provider.internal(via, {
-            value: toNano("0.4"),
-            sendMode: 0,
+            value: toNano("0.2"),
+            sendMode: 1,
             body: beginCell()
                     .storeUint(0x91d555f7, 32)
                     .storeRef(arbitrary_block.block)
@@ -84,11 +85,11 @@ export class LiteClientContract implements Contract {
         return new LiteClientContract(contractAddress(workchain, init), init);
     }
 
-    async sendDeployLiteClient(provider: ContractProvider, via: Sender, ls_pair: LSPair, init_block_seqno: number, value: bigint) {
+    async sendDeployLiteClient(provider: ContractProvider, via: Sender, contract_setup_info: Cell, init_block_seqno: number, value: bigint) {
         await provider.internal(via, {
             value,
             sendMode: SendMode.PAY_GAS_SEPARATELY,
-            body: await get_contract_setup_info(ls_pair, init_block_seqno),
+            body: contract_setup_info,
         });
     }
 

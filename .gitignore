@@ -1,0 +1,7 @@
+node_modules/
+tests/cache/
+
+yarn.lock
+*.boc
+*.fif
+*.out

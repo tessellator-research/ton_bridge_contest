@@ -1,5 +1,5 @@
 import { Blockchain, SandboxContract, TreasuryContract } from "@ton/sandbox";
-import { Cell, Dictionary, toNano } from "@ton/core";
+import { beginCell, Cell, Dictionary, toNano } from "@ton/core";
 import { LiteClientContract, TransactionCheckerContract } from "../wrappers/TonBridgeContest";
 import "@ton/test-utils";
 import { compile } from "@ton/blueprint";
@@ -8,11 +8,14 @@ import { fetch_key_block_with_next_validators_by_seqno, get_blockchain_query_cli
 
 /*
 
-This script contains tests for lite-client & transaction-checker contracts.
+   This script contains tests for lite-client & transaction-checker contracts.
 It fetches testnet transactions and blocks and proves their existance to the contracts mentioned above.
-Basically, it is Testnet->Testnet "bridge" that attests proofs of presence of blocks and transactions.
-This is equivalent to Testnet->Fastnet and Fastnet->Testnet, because the validation logic remains the
-same regardless of these two networks.
+Since, masterchain signatures are cleared quickly from validator's memory (and we demand >1 key blocks
+and therefore >1 signatures), this file contains a Testnet->Testnet "bridge" that attests proofs of
+presence of blocks and transactions in testnet. This is equivalent to Testnet->Fastnet and
+Fastnet->Testnet, because the validation logic remains the same regardless of these two networks.
+
+   For Fastnet->Testnet (validation of Fastnet information inside Testnet) use testnet-cli.
 
 */
 
@@ -27,31 +30,37 @@ describe("TonBridgeContest", () => {
     let lite_client_contract: SandboxContract<LiteClientContract>;
     let transaction_checker_contract: SandboxContract<TransactionCheckerContract>;
     let testnet_ls_pair: LSPair;
-    let fastnet_ls_pair: LSPair;
 
     // seqnos of key_blocks with included 36th param (new validators)
     let testnet_proper_key_blocks_seqnos: number[] = [];
-    // let fastnet_proper_key_blocks_seqnos: number[] = [];
 
     beforeAll(async () => {
         blockchain = await Blockchain.create();
         
         testnet_ls_pair = await get_blockchain_query_client("testnet");
-        fastnet_ls_pair = await get_blockchain_query_client("fastnet");
+
+        testnet_proper_key_blocks_seqnos = await get_recent_proper_key_blocks(testnet_ls_pair, 5);
         
-        testnet_proper_key_blocks_seqnos = await get_recent_proper_key_blocks(testnet_ls_pair);
-        // fastnet_proper_key_blocks_seqnos = await get_recent_proper_key_blocks(fastnet_ls_pair);
-
-        lite_client_contract = blockchain.openContract(await LiteClientContract.createFromConfig(testnet_ls_pair, testnet_proper_key_blocks_seqnos[0]));
-        transaction_checker_contract = blockchain.openContract(await TransactionCheckerContract.createFromConfig(lite_client_contract.address));
-
+        const lite_client_contract_from_config = await LiteClientContract.createFromConfig(testnet_ls_pair, testnet_proper_key_blocks_seqnos[0]);
+        lite_client_contract = blockchain.openContract(lite_client_contract_from_config);
+        
         deployer = await blockchain.treasury("deployer");
-
-        const deployResult = await lite_client_contract.sendDeployLiteClient(deployer.getSender(), testnet_ls_pair, testnet_proper_key_blocks_seqnos[0], toNano("0.1"));
-
-        expect(deployResult.transactions).toHaveTransaction({
+        
+        const lite_client_deploy_result = await lite_client_contract.sendDeployLiteClient(deployer.getSender(), lite_client_contract_from_config.init!.data, testnet_proper_key_blocks_seqnos[0], toNano("0.1"));
+        
+        expect(lite_client_deploy_result.transactions).toHaveTransaction({
             from: deployer.address,
             to: lite_client_contract.address,
+            deploy: true,
+            success: true,
+        });
+        
+        transaction_checker_contract = blockchain.openContract(await TransactionCheckerContract.createFromConfig(lite_client_contract.address));
+        const transaction_checker_contract_deploy_result = await transaction_checker_contract.sendDeployTransactionChecker(deployer.getSender(), lite_client_contract.address, toNano("0.1"));
+
+        expect(transaction_checker_contract_deploy_result.transactions).toHaveTransaction({
+            from: deployer.address,
+            to: transaction_checker_contract.address,
             deploy: true,
             success: true,
         });
@@ -62,16 +71,21 @@ describe("TonBridgeContest", () => {
         const current_validators_info = (await blockchain.runGetMethod(lite_client_contract.address, "get_validators_info", [])).stackReader;
         const current_validators_utime_until = Number(current_validators_info.readBigNumber());
         const current_validators_total_weight = current_validators_info.readBigNumber();
-        const current_validators = current_validators_info.readCell();
+        const current_validators_raw_dict = current_validators_info.readCell();
         const next_validators_utime_until = Number(current_validators_info.readBigNumber());
         const next_validators_total_weight = current_validators_info.readBigNumber();
-        const next_validators = current_validators_info.readCell();
+        const next_validators_raw_dict = current_validators_info.readCell();
         const latest_known_epoch_block_seqno = Number(current_validators_info.readBigNumber());
+        
+        const current_validators = Dictionary.loadDirect(Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(45), current_validators_raw_dict);
+        const next_validators = Dictionary.loadDirect(Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(45), next_validators_raw_dict);
+
         return { current_validators_utime_until, current_validators_total_weight, current_validators,
                  next_validators_utime_until,    next_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno };
     }
 
     afterAll(() => {
+        testnet_ls_pair.engine.close();
         testnet_ls_pair.engine.close();
     }, 1000);
 
@@ -80,12 +94,12 @@ describe("TonBridgeContest", () => {
         // blockchain and TonBridgeContest are ready to use
     }, 500000);
 
-    it(`should call new_key_block on a chain of ${testnet_proper_key_blocks_seqnos.length - 1} valid keyblocks`, async () => {
+    it(`should call new_key_block on a chain of valid keyblocks`, async () => {
         let arbitrary_sender = await blockchain.treasury("Alice", { balance: toNano("10") });
 
         let latest_known_epoch_key_block_seqno = (await get_validators_info()).latest_known_epoch_block_seqno;
 
-        for (let i = 1; i <= testnet_proper_key_blocks_seqnos.length - 1; i++) {
+        for (let i = 1; i < testnet_proper_key_blocks_seqnos.length; i++) {
             const key_block = await fetch_key_block_with_next_validators_by_seqno(testnet_ls_pair, testnet_proper_key_blocks_seqnos[i]);
             const some_query_id = get_random_uint_64();
             const test_new_key_block = await lite_client_contract.sendNewKeyBlock(arbitrary_sender.getSender(), some_query_id, { block: key_block.block, file_hash: key_block.file_hash, signatures: key_block.block_signatures });
@@ -220,5 +234,103 @@ describe("TonBridgeContest", () => {
         });
 
         console.log(`Successfully failed due to valid, but outdated key block`);
+    }, 500000);
+
+    it(`should call check_transaction`, async () => {
+        let arbitrary_sender = await blockchain.treasury("Alice", { balance: toNano("10") });
+
+        const validators_info = await get_validators_info();
+        const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
+
+        const seqno = latest_known_epoch_key_block_seqno + 1;
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+
+        // @ts-ignore
+        const test_check_transaction = await transaction_checker_contract.sendCheckTransactionInMcBlock(arbitrary_sender.getSender(), { block: block.block, signatures: block.block_signatures, file_hash: block.file_hash, account_dict_key: block.account_dict_key, transaction_dict_key: block.transaction_dict_key, transaction_cell: block.transaction_cell, do_validators_switch_for_check_block: block.do_validators_switch_for_check_block });
+
+        expect(test_check_transaction.transactions).toHaveTransaction({
+            from: transaction_checker_contract.address,
+            to: arbitrary_sender.address,
+            success: true,
+            body: (x: Cell | undefined) => {
+                if (x) {
+                    const response_message = x.asSlice();
+                    const correct_prefix = response_message?.loadUintBig(32) === 0x756adff1n;
+                    expect(correct_prefix).toBe(true);
+                    console.log(`Successfully checked transaction in block with seqno=${seqno}`);
+                    return correct_prefix;
+                }
+                console.log("Failed. Result: ", test_check_transaction);
+                return false;
+            }
+        });
+    }, 500000);
+
+    it(`should call check_transaction on tampered transaction and fail`, async () => {
+        let arbitrary_sender = await blockchain.treasury("Mallory", { balance: toNano("10") });
+
+        const validators_info = await get_validators_info();
+        const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
+
+        const seqno = latest_known_epoch_key_block_seqno + 1;
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+
+        const test_check_transaction = await transaction_checker_contract.sendCheckTransactionInMcBlock(arbitrary_sender.getSender(), { block: block.block, signatures: block.block_signatures, file_hash: block.file_hash, account_dict_key: block.account_dict_key, transaction_dict_key: block.transaction_dict_key ^ 0x10n, transaction_cell: block.transaction_cell, do_validators_switch_for_check_block: block.do_validators_switch_for_check_block });
+
+        expect(test_check_transaction.transactions).toHaveTransaction({
+            on: transaction_checker_contract.address,
+            to: transaction_checker_contract.address,
+            exitCode: 110
+        });
+    }, 500000);
+
+    it(`should call check_transaction on tampered account and fail`, async () => {
+        let arbitrary_sender = await blockchain.treasury("Mallory", { balance: toNano("10") });
+
+        const validators_info = await get_validators_info();
+        const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
+
+        const seqno = latest_known_epoch_key_block_seqno + 1;
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+
+        const test_check_transaction = await transaction_checker_contract.sendCheckTransactionInMcBlock(arbitrary_sender.getSender(), { block: block.block, signatures: block.block_signatures, file_hash: block.file_hash, account_dict_key: block.account_dict_key ^ 0x10n, transaction_dict_key: block.transaction_dict_key, transaction_cell: block.transaction_cell, do_validators_switch_for_check_block: block.do_validators_switch_for_check_block });
+
+        expect(test_check_transaction.transactions).toHaveTransaction({
+            on: transaction_checker_contract.address,
+            to: transaction_checker_contract.address,
+            exitCode: 110
+        });
+    }, 500000);
+
+    it(`should call check_transaction on tampered block and fail`, async () => {
+        let arbitrary_sender = await blockchain.treasury("Mallory", { balance: toNano("10") });
+
+        const validators_info = await get_validators_info();
+        const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
+
+        const seqno = latest_known_epoch_key_block_seqno + 1;
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+
+        let block_cs = block.block.asSlice();
+        let modified_block = beginCell();
+        modified_block.storeUint(block_cs.loadUint(32) ^ 0x10, 32);  // Tampered Block prefix! This will cause signatures check fail (error 104)
+        modified_block.storeUint(block_cs.loadUint(32), 32);  // global_id
+        modified_block.storeRef(block_cs.loadRef());  // info
+        modified_block.storeRef(block_cs.loadRef());  // value_flow
+        modified_block.storeRef(block_cs.loadRef());  // state_update
+        modified_block.storeRef(block_cs.loadRef());  // extra
+
+        const test_check_transaction = await transaction_checker_contract.sendCheckTransactionInMcBlock(arbitrary_sender.getSender(), { block: modified_block.endCell(), signatures: block.block_signatures, file_hash: block.file_hash, account_dict_key: block.account_dict_key, transaction_dict_key: block.transaction_dict_key, transaction_cell: block.transaction_cell, do_validators_switch_for_check_block: block.do_validators_switch_for_check_block });
+        
+        expect(test_check_transaction.transactions).toHaveTransaction({
+            on: lite_client_contract.address,
+            exitCode: 104
+        });
+
+        expect(test_check_transaction.transactions).toHaveTransaction({
+            on: transaction_checker_contract.address,
+            to: transaction_checker_contract.address,
+            exitCode: 113
+        });
     }, 500000);
 });
