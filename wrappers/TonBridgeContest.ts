@@ -58,7 +58,7 @@ export class TransactionCheckerContract implements Contract {
 
     async sendCheckTransactionInMcBlock(provider: ContractProvider, via: Sender, arbitrary_block: { block: Cell, signatures: any, file_hash: bigint, account_dict_key: bigint, transaction_dict_key: bigint, transaction_cell: Cell, do_validators_switch_for_check_block: boolean }) {
         await provider.internal(via, {
-            value: toNano("0.2"),
+            value: toNano("0.5"),
             sendMode: 1,
             body: beginCell()
                     .storeUint(0x91d555f7, 32)
@@ -95,7 +95,7 @@ export class LiteClientContract implements Contract {
 
     async sendNewKeyBlock(provider: ContractProvider, via: Sender, query_id: bigint, proper_key_block: { block: Cell, signatures: any, file_hash: bigint }) {
         await provider.internal(via, {
-            value: toNano("0.2"),
+            value: toNano("0.5"),
             sendMode: 0,
             body: beginCell()
                     .storeUint(0x11a78ffe, 32)
@@ -110,7 +110,7 @@ export class LiteClientContract implements Contract {
 
     async sendCheckMcBlock(provider: ContractProvider, via: Sender, query_id: bigint, arbitrary_block: { block: Cell, signatures: any, file_hash: bigint, do_validators_switch_for_check_block: boolean }) {
         await provider.internal(via, {
-            value: toNano("0.2"),
+            value: toNano("0.5"),
             sendMode: 0,
             body: beginCell()
                     .storeUint(0x8eaa9d76, 32)

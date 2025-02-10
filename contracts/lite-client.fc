@@ -2,10 +2,10 @@
 
 {-
     storage#_                  current_validators_utime_until:uint32
-                               current_validators_total_weight:uint64
+                               current_main_validators_total_weight:uint64
                                current_validators:(HashmapE 16 ValidatorDescr)
                                next_validators_utime_until:uint32
-                               next_validators_total_weight:uint64
+                               next_main_validators_total_weight:uint64
                                next_validators:(HashmapE 16 ValidatorDescr)
                                latest_known_epoch_block_seqno:uint32        = Storage;
 
@@ -31,25 +31,25 @@ const int errors::expected_known_epoch_block             = 109;
 (int, int, cell, int, int, cell, int) get_storage() impure {
     slice c4_cs = get_data().begin_parse();
     int current_validators_utime_until = c4_cs~load_uint(32);
-    int current_validators_total_weight = c4_cs~load_uint(64);
+    int current_main_validators_total_weight = c4_cs~load_uint(64);
     cell current_validators = c4_cs~load_dict();
 
     int next_validators_utime_until = c4_cs~load_uint(32);
-    int next_validators_total_weight = c4_cs~load_uint(64);
+    int next_main_validators_total_weight = c4_cs~load_uint(64);
     cell next_validators = c4_cs~load_dict();
 
     int latest_known_epoch_block_seqno = c4_cs~load_uint(32);
-    return (current_validators_utime_until, current_validators_total_weight, current_validators,
-            next_validators_utime_until,    next_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno);
+    return (current_validators_utime_until, current_main_validators_total_weight, current_validators,
+            next_validators_utime_until,    next_main_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno);
 }
 
-() set_storage(int current_validators_utime_until, int current_validators_total_weight, cell current_validators, int next_validators_utime_until, int next_validators_total_weight, cell next_validators, int latest_known_epoch_block_seqno) impure {
+() set_storage(int current_validators_utime_until, int current_main_validators_total_weight, cell current_validators, int next_validators_utime_until, int next_main_validators_total_weight, cell next_validators, int latest_known_epoch_block_seqno) impure {
     cell c4 = begin_cell()
                 .store_uint(current_validators_utime_until, 32)
-                .store_uint(current_validators_total_weight, 64)
+                .store_uint(current_main_validators_total_weight, 64)
                 .store_dict(current_validators)
                 .store_uint(next_validators_utime_until, 32)
-                .store_uint(next_validators_total_weight, 64)
+                .store_uint(next_main_validators_total_weight, 64)
                 .store_dict(next_validators)
                 .store_uint(latest_known_epoch_block_seqno, 32)
               .end_cell();
@@ -119,8 +119,8 @@ const int errors::expected_known_epoch_block             = 109;
     
     int block_seqno = block_info_cs~load_uint(32);
 
-    var (current_validators_utime_until, current_validators_total_weight, current_validators,
-            next_validators_utime_until,    next_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno) = get_storage();
+    var (current_validators_utime_until, current_main_validators_total_weight, current_validators,
+            next_validators_utime_until,    next_main_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno) = get_storage();
 
     throw_unless(errors::expected_known_epoch_block, latest_known_epoch_block_seqno <= block_seqno);
 
@@ -131,11 +131,11 @@ const int errors::expected_known_epoch_block             = 109;
         ;; known next_validators (not ones that contract has just received). This logic is needed to verify the
         ;; received block from the new epoch which contains next_validators (i.e. when one calls "new_key_block")
         current_validators_utime_until = next_validators_utime_until;
-        current_validators_total_weight = next_validators_total_weight;
+        current_main_validators_total_weight = next_main_validators_total_weight;
         current_validators = next_validators;
 
         next_validators_utime_until = 0;
-        next_validators_total_weight = 0;
+        next_main_validators_total_weight = 0;
         next_validators = new_dict();
     }
 
@@ -160,7 +160,7 @@ const int errors::expected_known_epoch_block             = 109;
         (validator_index, corresponding_validator_signature, exists_next_dict_entry?) = signatures.udict_get_next?(16, validator_index);
     }
 
-    throw_unless(errors::weak_signatures, signed_weight * 3 > current_validators_total_weight * 2);
+    throw_unless(errors::weak_signatures, signed_weight * 3 > current_main_validators_total_weight * 2);
 
     slice sender_address = cs~load_msg_addr();
     
@@ -232,22 +232,22 @@ const int errors::expected_known_epoch_block             = 109;
     if next_validators_type == 0x11 {
         slice next_validators_slice = begin_cell().store_maybe_ref(config_param_36~load_ref()).end_cell().begin_parse();
         next_validators = next_validators_slice~load_dict();
-        ;; validators#11 does not contain "total_weight" field. It is calculated below
-        next_validators_total_weight = 0;
-        (int validator_index, slice validator_descr, int flag) = next_validators.udict_get_next?(16, -1);
-        while flag != 0 {
-            validator_descr~load_uint(8);   ;; prefix of ValidatorDescr
-            validator_descr~load_uint(32);  ;; prefix of SigPubKey
-            validator_descr~load_uint(256);  ;; SigPubKey
-            next_validators_total_weight += validator_descr~load_uint(64);
-            (validator_index, validator_descr, flag) = next_validators.udict_get_next?(16, validator_index);
-        }
     } elseif next_validators_type == 0x12 {
-        next_validators_total_weight = config_param_36~load_uint(64);
+        config_param_36~load_uint(64);  ;; total_weight - sum weight of all next_validators
         next_validators = config_param_36~load_dict();
     }
+    next_main_validators_total_weight = 0;
+    int validator_index = 0;
+    repeat main_validators_quantity {
+        (_, slice validator_descr, _) = next_validators.udict_get_next?(16, validator_index);
+        validator_descr~load_uint(8);   ;; prefix of ValidatorDescr
+        validator_descr~load_uint(32);  ;; prefix of SigPubKey
+        validator_descr~load_uint(256);  ;; SigPubKey
+        next_main_validators_total_weight += validator_descr~load_uint(64);
+        validator_index += 1;
+    }
 
-    set_storage(current_validators_utime_until, current_validators_total_weight, current_validators, next_validators_utime_until, next_validators_total_weight, next_validators, block_seqno);
+    set_storage(current_validators_utime_until, current_main_validators_total_weight, current_validators, next_validators_utime_until, next_main_validators_total_weight, next_validators, block_seqno);
 
     return reply_with_message(sender_address, begin_cell().store_uint(0xff8ff4e1, 32).store_uint(query_id, 64).store_uint(root_hash, 256).end_cell().begin_parse());
 }

@@ -70,18 +70,18 @@ describe("TonBridgeContest", () => {
     async function get_validators_info() {
         const current_validators_info = (await blockchain.runGetMethod(lite_client_contract.address, "get_validators_info", [])).stackReader;
         const current_validators_utime_until = Number(current_validators_info.readBigNumber());
-        const current_validators_total_weight = current_validators_info.readBigNumber();
+        const current_main_validators_total_weight = current_validators_info.readBigNumber();
         const current_validators_raw_dict = current_validators_info.readCell();
         const next_validators_utime_until = Number(current_validators_info.readBigNumber());
-        const next_validators_total_weight = current_validators_info.readBigNumber();
+        const next_main_validators_total_weight = current_validators_info.readBigNumber();
         const next_validators_raw_dict = current_validators_info.readCell();
         const latest_known_epoch_block_seqno = Number(current_validators_info.readBigNumber());
         
         const current_validators = Dictionary.loadDirect(Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(45), current_validators_raw_dict);
         const next_validators = Dictionary.loadDirect(Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(45), next_validators_raw_dict);
 
-        return { current_validators_utime_until, current_validators_total_weight, current_validators,
-                 next_validators_utime_until,    next_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno };
+        return { current_validators_utime_until, current_main_validators_total_weight, current_validators,
+                 next_validators_utime_until,    next_main_validators_total_weight,    next_validators,  latest_known_epoch_block_seqno };
     }
 
     afterAll(() => {
@@ -120,7 +120,8 @@ describe("TonBridgeContest", () => {
                         const correct_prefix = response_message?.loadUintBig(32) === 0xff8ff4e1n;
                         const correct_query_id = response_message?.loadUintBig(64) === some_query_id;
                         expect(correct_prefix && correct_query_id).toBe(true);
-                        console.log(`Successfully updated contract's state via valid key_block [${i + 1}]`);
+                        console.log(`correct_prefix=${correct_prefix}, correct_query_id=${correct_query_id}`);
+                        console.log(`Successfully updated contract's state via valid key_block [${i}]`);
                         return correct_prefix && correct_query_id;
                     }
                     console.log("Failed. Result: ", test_new_key_block);
@@ -141,17 +142,17 @@ describe("TonBridgeContest", () => {
 
         const validators_info = (await blockchain.runGetMethod(lite_client_contract.address, "get_validators_info", [])).stackReader;
         const current_validators_utime_until = Number(validators_info.readBigNumber());
-        const current_validators_total_weight = validators_info.readBigNumber();
+        const current_main_validators_total_weight = validators_info.readBigNumber();
         const current_validators = Dictionary.loadDirect(Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(45), validators_info.readCell());
         const next_validators_utime_until = Number(validators_info.readBigNumber());
-        const next_validators_total_weight = validators_info.readBigNumber();
+        const next_main_validators_total_weight = validators_info.readBigNumber();
         const next_validators = Dictionary.loadDirect(Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(45), validators_info.readCell());
 
         for (let i = 0; i < 10; i++) {
             const epoch_first_block_seqno = (await testnet_ls_pair.client.lookupBlockByUtime({workchain: -1, shard: "-9223372036854775808", utime: current_validators_utime_until - 100})).id.seqno;
             const epoch_last_block_seqno = (await testnet_ls_pair.client.lookupBlockByUtime({workchain: -1, shard: "-9223372036854775808", utime: current_validators_utime_until})).id.seqno;
             const seqno_between = Number(((Math.random() * (epoch_last_block_seqno - epoch_first_block_seqno)) + epoch_first_block_seqno).toFixed(0));
-            const arbitrary_block = await fetch_block(testnet_ls_pair, seqno_between, current_validators_total_weight, current_validators, next_validators_total_weight, next_validators);
+            const arbitrary_block = await fetch_block(testnet_ls_pair, seqno_between, current_main_validators_total_weight, current_validators, next_main_validators_total_weight, next_validators);
             const some_query_id = get_random_uint_64();
             if (arbitrary_block.weak_signatures_from_archival_node) {
                 console.log(`Could not retrieve signatures with stronger signers for block seqno=${arbitrary_block.seqno}, because it's too old and proper state has been gc'd. Continuing silently...`);
@@ -243,7 +244,7 @@ describe("TonBridgeContest", () => {
         const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
 
         const seqno = latest_known_epoch_key_block_seqno + 1;
-        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_main_validators_total_weight, validators_info.current_validators, validators_info.next_main_validators_total_weight, validators_info.next_validators);
 
         // @ts-ignore
         const test_check_transaction = await transaction_checker_contract.sendCheckTransactionInMcBlock(arbitrary_sender.getSender(), { block: block.block, signatures: block.block_signatures, file_hash: block.file_hash, account_dict_key: block.account_dict_key, transaction_dict_key: block.transaction_dict_key, transaction_cell: block.transaction_cell, do_validators_switch_for_check_block: block.do_validators_switch_for_check_block });
@@ -273,7 +274,7 @@ describe("TonBridgeContest", () => {
         const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
 
         const seqno = latest_known_epoch_key_block_seqno + 1;
-        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_main_validators_total_weight, validators_info.current_validators, validators_info.next_main_validators_total_weight, validators_info.next_validators);
 
         const test_check_transaction = await transaction_checker_contract.sendCheckTransactionInMcBlock(arbitrary_sender.getSender(), { block: block.block, signatures: block.block_signatures, file_hash: block.file_hash, account_dict_key: block.account_dict_key, transaction_dict_key: block.transaction_dict_key ^ 0x10n, transaction_cell: block.transaction_cell, do_validators_switch_for_check_block: block.do_validators_switch_for_check_block });
 
@@ -291,7 +292,7 @@ describe("TonBridgeContest", () => {
         const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
 
         const seqno = latest_known_epoch_key_block_seqno + 1;
-        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_main_validators_total_weight, validators_info.current_validators, validators_info.next_main_validators_total_weight, validators_info.next_validators);
 
         const test_check_transaction = await transaction_checker_contract.sendCheckTransactionInMcBlock(arbitrary_sender.getSender(), { block: block.block, signatures: block.block_signatures, file_hash: block.file_hash, account_dict_key: block.account_dict_key ^ 0x10n, transaction_dict_key: block.transaction_dict_key, transaction_cell: block.transaction_cell, do_validators_switch_for_check_block: block.do_validators_switch_for_check_block });
 
@@ -309,7 +310,7 @@ describe("TonBridgeContest", () => {
         const latest_known_epoch_key_block_seqno = validators_info.latest_known_epoch_block_seqno;
 
         const seqno = latest_known_epoch_key_block_seqno + 1;
-        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_validators_total_weight, validators_info.current_validators, validators_info.next_validators_total_weight, validators_info.next_validators);
+        const block = await fetch_block_and_transaction_by_seqno(testnet_ls_pair, seqno, validators_info.current_main_validators_total_weight, validators_info.current_validators, validators_info.next_main_validators_total_weight, validators_info.next_validators);
 
         let block_cs = block.block.asSlice();
         let modified_block = beginCell();

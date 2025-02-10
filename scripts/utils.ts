@@ -7,9 +7,8 @@ import { signVerify } from "@ton/crypto";
 import { parse_hashmap_aug } from "./hashmapaug";
 import { read_raw_mc_block, read_signatures, save_raw_mc_block, save_signatures } from "./cache";
 import { promises as fs } from "fs";
-import { exit } from "process";
 
-export type LSPair = { engine: LiteEngine, client: LiteClient, network: "testnet" | "fastnet" };
+export type LSPair = { engine: LiteEngine, client: LiteClient, network: "testnet" | "mainnet" | "fastnet" };
 
 export async function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, 1000));
@@ -68,10 +67,13 @@ export function generate_signatures_cell(signatures: any) {
     return continue_cell();
 }
 
-export async function get_blockchain_query_client(network: string): Promise<LSPair> {
+export async function get_blockchain_query_client(network: "testnet" | "mainnet" | "fastnet" ): Promise<LSPair> {
     let liteservers = [];
     if (network === "testnet") {
         const result = (await fetch("https://ton.org/testnet-global.config.json").then((data) => data.json()));
+        liteservers = result.liteservers;
+    } else if (network === "mainnet") {
+        const result = (await fetch("https://ton.org/global.config.json").then((data) => data.json()));
         liteservers = result.liteservers;
     } else if (network === "fastnet") {
         const result = (await fetch("https://contest.com/file/400780400604/4/P0UeFR_X1mg.1626.json/04de18101ec5af6dea").then((data) => data.json()));
@@ -126,8 +128,12 @@ export async function get_block_signatures(ls_pair: LSPair, seqno: number, preve
       const signatures = data.result.signatures.map((signature_obj: any) => { return { node_id_short: signature_obj.node_id_short, signature: Buffer.from(signature_obj.signature, "base64") } });
       return { signatures, workchain: data.result.id.workchain, shard: data.result.id.shard, root_hash: data.result.id.root_hash, file_hash: data.result.id.file_hash };
     }
-    let url = `https://testnet.toncenter.com/api/v2/getMasterchainBlockSignatures?api_key=a3c813fe0a5607b28f259c5bd9941db91ce8275a5998dab85498827dad9bd7c2&seqno=${seqno}`;
-    if (ls_pair.network === "fastnet") {
+    let url = "";
+    if (ls_pair.network === "testnet") {
+        url = `https://testnet.toncenter.com/api/v2/getMasterchainBlockSignatures?api_key=a3c813fe0a5607b28f259c5bd9941db91ce8275a5998dab85498827dad9bd7c2&seqno=${seqno}`;
+    } else if (ls_pair.network === "mainnet") {
+        url = `https://toncenter.com/api/v2/getMasterchainBlockSignatures?api_key=31a0bf2b694b46303b67f6a5b7b7fd349300e7f0d38a71590fcacb82cc55e992&seqno=${seqno}`;
+    } else if (ls_pair.network === "fastnet") {
         url = `http://109.236.91.95:8081/getMasterchainBlockSignatures?seqno=${seqno}`;
     }
 
@@ -189,23 +195,7 @@ export async function parse_block_raw(block_raw: Buffer) {
     return TonRocks.bc.BlockParser.parseBlock(root_cell);
 }
 
-export function remove_most_significant_signers(validators: any, subset: bigint[], total_weight: bigint): bigint[] {
-    let sorted_subset = subset.sort((i: bigint, j: bigint) => {
-        const weight_i = BigInt("0x" + uint8array_to_hex(validators.get(i)!.slice(5 + 32, 5 + 32 + 8)));
-        const weight_j = BigInt("0x" + uint8array_to_hex(validators.get(j)!.slice(5 + 32, 5 + 32 + 8)));
-        return (weight_i < weight_j) ? -1 : (
-            (weight_i === weight_j) ? 0 : 1
-        );
-    }).map((i: bigint) => [i, BigInt("0x" + uint8array_to_hex(validators.get(i)!.slice(5 + 32, 5 + 32 + 8)))]);
-
-    let significant = [];
-    do {
-        significant.push(sorted_subset.pop()![0]);
-    } while (sorted_subset.reduce((a, c) => a + c[1], 0n) * 3n > total_weight);
-    return significant;
-}
-
-export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqno: number, current_validators_total_weight: bigint, current_validators_dict: any, next_validators_total_weight: bigint, next_validators_dict: any, tx_hash: bigint = 0n) {
+export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqno: number, current_main_validators_total_weight: bigint, current_validators_dict: any, next_main_validators_total_weight: bigint, next_validators_dict: any, tx_hash: bigint = 0n) {
     const { signatures, workchain, shard } = (await get_block_signatures(ls_pair, seqno))!;
 
     const root_file_hashes = (await get_block_root_and_file_hashes(ls_pair, seqno, workchain, shard))!;
@@ -304,7 +294,7 @@ export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqn
             console.log("Making a switch!", coincided_node_id_shorts);
             do_validators_switch_for_check_block = true;
             current_validators_dict = next_validators_dict;
-            current_validators_total_weight = next_validators_total_weight;
+            current_main_validators_total_weight = next_main_validators_total_weight;
         }
     }
 
@@ -337,18 +327,15 @@ export async function fetch_block_and_transaction_by_seqno(ls_pair: LSPair, seqn
             }
         }
 
-        if (signed_weight * 3n <= current_validators_total_weight * 2n) {
+        if (signed_weight * 3n <= current_main_validators_total_weight * 2n) {
             if (signed_weight === 0n) {
               throw new Error("Block signers is not a subset of current validators");
             }
-            console.log(`Weak signers! ${signed_weight}/${current_validators_total_weight}; seqno=${seqno}; block_signatures_dict_serialized.size=${block_signatures_dict_serialized.size} signatures_quantity=${signatures.length}`);
-            // let kt_weight = 0n; for (let k = 0; k < actual_validators_dict.size; k++) { kt_weight += BigInt("0x" + uint8array_to_hex(actual_validators_dict.get(BigInt(k))![1].slice(5 + 32, 5 + 32 + 8))); }
-            // block_signatures_dict_serialized.keys().map((k: bigint) => { console.log(`pubkey=${uint8array_to_hex(actual_validators_dict.get(k)![1].slice(5, 5 + 32))}; weight=${BigInt("0x" + uint8array_to_hex(actual_validators_dict.get(k)![1].slice(5 + 32, 5 + 32 + 8)))}`); });
-            // console.log(`ALL_WEIGHT=${kt_weight}`);
+            console.log(`Weak signers! ${signed_weight}/${current_main_validators_total_weight}; seqno=${seqno}; block_signatures_dict_serialized.size=${block_signatures_dict_serialized.size} signatures_quantity=${signatures.length}`);
             console.log("Trying to get signatures with stronger signers...");
             // There's a chance of lite server returning signatures from underpowered signers. In this case
             // we try to obtain a signature set with stronger signers by querying the lite server once again.
-            return await fetch_block_and_transaction_by_seqno(ls_pair, seqno, current_validators_total_weight, current_validators_dict, next_validators_total_weight, next_validators_dict, tx_hash);
+            return await fetch_block_and_transaction_by_seqno(ls_pair, seqno, current_main_validators_total_weight, current_validators_dict, next_main_validators_total_weight, next_validators_dict, tx_hash);
         }
     }
 
@@ -394,11 +381,11 @@ export async function fetch_key_block_with_next_validators_by_seqno(ls_pair: LSP
         }
     }
 
-    let current_validators = (Array.from(block_parsed.extra.custom.config.config.map.get("22").cur_validators.list.map.entries()) as any).sort((a: any, b: any) => a[0] - b[0] < 0 ? -1 : 1).map((validator: any) => validator[1]);
+    let current_validators = (Array.from(block_parsed.extra.custom.config.config.map.get("22").cur_validators.list.map.entries()) as any).sort((a: any, b: any) => BigInt("0x" + a[0]) < BigInt("0x" + b[0]) ? -1 : 1).map((validator: any) => validator[1]);
     for (let i = 0; i < current_validators.length; i++) {
       current_validators[i].node_id_short = await get_node_id_short(current_validators[i].public_key.pubkey);
     }
-    const current_validators_total_weight = BigInt(block_parsed.extra.custom.config.config.map.get("22").cur_validators.total_weight.toString(10));
+    let current_main_validators_total_weight = 0n; for (let i = 0; i < block_parsed.extra.custom.config.config.map.get("22").cur_validators.main; i++) { current_main_validators_total_weight += BigInt(current_validators[i].weight.toString()); }
 
     let block_signatures_dict_serialized = Dictionary.empty(
         Dictionary.Keys.BigUint(16),
@@ -470,15 +457,12 @@ export async function fetch_key_block_with_next_validators_by_seqno(ls_pair: LSP
             // console.log("resulting_array", resulting_array, signatures_sorted_arr.length, resulting_array.length);
         }
 
-        if (signed_weight * 3n <= current_validators_total_weight * 2n) {
+        if (signed_weight * 3n <= current_main_validators_total_weight * 2n) {
             if (signed_weight === 0n) {
               throw new Error("Block signers is not a subset of current validators");
             }
-            console.log(`Weak signers! ${signed_weight}/${current_validators_total_weight}; seqno=${seqno}; block_signatures_dict_serialized.size=${block_signatures_dict_serialized.size} signatures_quantity=${signatures.length}; validators_quantity=${current_validators.length}`);
-            // let kt_weight = 0n; for (let k = 0; k < current_validators.length; k++) { kt_weight += BigInt("0x" + uint8array_to_hex(current_validators.get(BigInt(k))!.slice(5 + 32, 5 + 32 + 8))); }
-            // block_signatures_dict_serialized.keys().map((k: bigint) => { console.log(`pubkey=${uint8array_to_hex(current_validators.get(k)!.slice(5, 5 + 32))}; weight=${BigInt("0x" + uint8array_to_hex(current_validators.get(k)!.slice(5 + 32, 5 + 32 + 8)))}`); });
-            // console.log(`ALL_WEIGHT=${kt_weight}`);
-            // console.log("Trying to get signatures with stronger signers...");
+            console.log(`Weak signers! ${signed_weight}/${current_main_validators_total_weight}; seqno=${seqno}; block_signatures_dict_serialized.size=${block_signatures_dict_serialized.size} signatures_quantity=${signatures.length}; validators_quantity=${current_validators.length}`);
+            console.log("Trying to get signatures with stronger signers...");
             // There's a chance of lite server returning signatures from underpowered signers. In this case
             // we try to obtain a signature set with stronger signers by querying the lite server once again.
             return await fetch_key_block_with_next_validators_by_seqno(ls_pair, seqno);
@@ -538,11 +522,11 @@ export async function fetch_contract_setup_info(ls_pair: LSPair, seqno: number) 
         }
     }
 
-    const current_validators_dict = Array.from(block_parsed.extra.custom.config.config.map.get("22").cur_validators.list.map.entries()) as any;
-    const next_validators_dict = Array.from(block_parsed.extra.custom.config.config.map.get("24").next_validators.list.map.entries()) as any;
+    let current_validators = (Array.from(block_parsed.extra.custom.config.config.map.get("22").cur_validators.list.map.entries()) as any).sort((a: any, b: any) => BigInt("0x" + a[0]) < BigInt("0x" + b[0]) ? -1 : 1).map((validator: any) => validator[1]);
+    let next_validators = (Array.from(block_parsed.extra.custom.config.config.map.get("24").next_validators.list.map.entries()) as any).sort((a: any, b: any) => BigInt("0x" + a[0]) < BigInt("0x" + b[0]) ? -1 : 1).map((validator: any) => validator[1]);
 
-    const current_validators_total_weight = BigInt(block_parsed.extra.custom.config.config.map.get("22").cur_validators.total_weight.toString(10));
-    const next_validators_total_weight = BigInt(block_parsed.extra.custom.config.config.map.get("24").next_validators.total_weight.toString(10));
+    let current_main_validators_total_weight = 0n; for (let i = 0; i < block_parsed.extra.custom.config.config.map.get("22").cur_validators.main; i++) { current_main_validators_total_weight += BigInt(current_validators[i].weight.toString()); }
+    let next_main_validators_total_weight = 0n; for (let i = 0; i < block_parsed.extra.custom.config.config.map.get("24").next_validators.main; i++) { next_main_validators_total_weight += BigInt(next_validators[i].weight.toString()); }
 
     const current_validators_time_until = BigInt(block_parsed.extra.custom.config.config.map.get("22").cur_validators.utime_until.toString(10));
     const next_validators_time_until = BigInt(block_parsed.extra.custom.config.config.map.get("24").next_validators.utime_until.toString(10));
@@ -557,20 +541,20 @@ export async function fetch_contract_setup_info(ls_pair: LSPair, seqno: number) 
         Dictionary.Values.Buffer(1 + 4 + 32 + 8),  // 1 byte prefix, 4 bytes prefix, 32 bytes - validator's pubkey, 8 bytes - validator's weight
     );
 
-    for (let i = 0; i < current_validators_dict.length; i++) {
-        const padded_weight = hex_to_uint8array(BigInt(current_validators_dict[i][1].weight.toString()).toString(16).padStart(16, "0"))
+    for (let i = 0; i < current_validators.length; i++) {
+        const padded_weight = hex_to_uint8array(BigInt(current_validators[i].weight.toString()).toString(16).padStart(16, "0"))
         let validator_descr = Buffer.alloc(45);
-        validator_descr.set(current_validators_dict[i][1].public_key.pubkey, 5);
+        validator_descr.set(current_validators[i].public_key.pubkey, 5);
         validator_descr.set(padded_weight, 37);
-        current_validators_dict_serialized.set(BigInt("0x" + current_validators_dict[i][0]), validator_descr);
+        current_validators_dict_serialized.set(BigInt(i), validator_descr);
     }
 
-    for (let i = 0; i < next_validators_dict.length; i++) {
-        const padded_weight = hex_to_uint8array(BigInt(next_validators_dict[i][1].weight.toString()).toString(16).padStart(16, "0"))
+    for (let i = 0; i < next_validators.length; i++) {
+        const padded_weight = hex_to_uint8array(BigInt(next_validators[i].weight.toString()).toString(16).padStart(16, "0"))
         let validator_descr = Buffer.alloc(45);
-        validator_descr.set(next_validators_dict[i][1].public_key.pubkey, 5);
+        validator_descr.set(next_validators[i].public_key.pubkey, 5);
         validator_descr.set(padded_weight, 37);
-        next_validators_dict_serialized.set(BigInt("0x" + next_validators_dict[i][0]), validator_descr);
+        next_validators_dict_serialized.set(BigInt(i), validator_descr);
     }
 
     let block_signatures_dict_serialized = Dictionary.empty(
@@ -591,30 +575,25 @@ export async function fetch_contract_setup_info(ls_pair: LSPair, seqno: number) 
 
         for (let i = 0; i < signatures.length; i++) {
             const node_id_short_i = signatures[i].node_id_short;
-            for (let j = 0; j < current_validators_dict.length; j++) {
-                const pubkey_j = current_validators_dict[j][1].public_key.pubkey;
+            for (let j = 0; j < current_validators.length; j++) {
+                const pubkey_j = current_validators[j].public_key.pubkey;
                 const node_id_short_j = await get_node_id_short(pubkey_j);
                 if (node_id_short_i === node_id_short_j) {
                     if (!signVerify(message, signatures[i].signature, pubkey_j)) {
                         throw new Error(`Invalid signature! ${i} ${j}`);
                     }
-                    block_signatures_dict_serialized.set(BigInt("0x" + current_validators_dict[j][0]), signatures[i].signature);
-                    signed_weight += BigInt(current_validators_dict[j][1].weight.toString());
-                    // console.log(`j=${j}; pubkey=${uint8array_to_hex(pubkey_j)}; node_id_short=${Buffer.from(await crypto.subtle.digest("SHA-256", Buffer.concat([Buffer.from([0xc6, 0xb4, 0x13, 0x48]), pubkey_j]))).toString("hex").toUpperCase()}; val_weight=${current_validators_dict[j][1].weight}`);
+                    block_signatures_dict_serialized.set(BigInt(j), signatures[i].signature);
+                    signed_weight += BigInt(current_validators[j].weight.toString());
                     break;
                 }
             }
         }
 
-        if (signed_weight * 3n <= current_validators_total_weight * 2n) {
+        if (signed_weight * 3n <= current_main_validators_total_weight * 2n) {
             if (signed_weight === 0n) {
               throw new Error("Block signers is not a subset of current validators");
             }
-            console.log(`Weak signers! ${signed_weight}/${current_validators_total_weight}; seqno=${seqno}`);
-            // console.log(`${block_signatures_dict_serialized.size} signatures; ${signatures.length} signatures; ${current_validators_dict.length} validators`);
-            // let kt_weight: bigint = 0n; for (let k = 0; k < current_validators_dict.length; k++) { kt_weight += BigInt(current_validators_dict[k][1].weight.toString()); }
-            // console.log(`ALL_WEIGHT=${kt_weight}`);
-            // for (let k = 0; k < current_validators_dict.length; k++) { console.log(`[${k}] val_node_id_short=${await get_node_id_short(current_validators_dict[k][1].public_key.pubkey)}`); }
+            console.log(`Weak signers! ${signed_weight}/${current_main_validators_total_weight}; seqno=${seqno}`);
             console.log("Trying to get signatures with stronger signers...");
             // There's a chance of lite server returning signatures from underpowered signers. In this case
             // we try to obtain a signature set with stronger signers by querying the lite server once again.
@@ -630,16 +609,16 @@ export async function fetch_contract_setup_info(ls_pair: LSPair, seqno: number) 
         block_signatures: block_signatures_dict_serialized,
 
         current_validators_time_until,
-        current_validators_total_weight: current_validators_total_weight,
+        current_main_validators_total_weight: current_main_validators_total_weight,
         current_validators: current_validators_dict_serialized,
 
         next_validators_time_until,
-        next_validators_total_weight: next_validators_total_weight,
+        next_main_validators_total_weight: next_main_validators_total_weight,
         next_validators: next_validators_dict_serialized,
     }
 }
 
-export async function fetch_block(ls_pair: LSPair, seqno: number, current_validators_total_weight: bigint, current_validators_dict: any, next_validators_total_weight: bigint, next_validators_dict: any, block_raw: Buffer | null = null, root_hash: Buffer | null = null, file_hash: Buffer | null = null, attempts = 0) {
+export async function fetch_block(ls_pair: LSPair, seqno: number, current_main_validators_total_weight: bigint, current_validators_dict: any, next_main_validators_total_weight: bigint, next_validators_dict: any, block_raw: Buffer | null = null, root_hash: Buffer | null = null, file_hash: Buffer | null = null, attempts = 0) {
     const { signatures } = (await get_block_signatures(ls_pair, seqno, true))!;
     if (!block_raw) {
         const hashes = (await get_block_root_and_file_hashes(ls_pair, seqno, -1, "-9223372036854775808"))!;
@@ -675,7 +654,7 @@ export async function fetch_block(ls_pair: LSPair, seqno: number, current_valida
             console.log("Making a switch!");
             do_validators_switch_for_check_block = true;
             current_validators_dict = next_validators_dict;
-            current_validators_total_weight = next_validators_total_weight;
+            current_main_validators_total_weight = next_main_validators_total_weight;
         }
     }
 
@@ -708,21 +687,21 @@ export async function fetch_block(ls_pair: LSPair, seqno: number, current_valida
             }
         }
 
-        if (signed_weight * 3n <= current_validators_total_weight * 2n) {
+        if (signed_weight * 3n <= current_main_validators_total_weight * 2n) {
             if (signed_weight === 0n) {
                 throw new Error("Block signers is not a subset of current validators");
             }
             if (block_signatures_dict_serialized.size !== signatures.length) {
                 throw new Error("Block signers is not a subset of current validators (block_signatures_dict_serialized.size !== signatures.length)");
             }
-            console.log(`[${attempts}] Weak signers! ${signed_weight}/${current_validators_total_weight}; seqno=${seqno}; block_signatures_dict_serialized.size=${block_signatures_dict_serialized.size} signatures_quantity=${signatures.length}; validators_quantity=${current_validators_dict.size}`);
+            console.log(`[${attempts}] Weak signers! ${signed_weight}/${current_main_validators_total_weight}; seqno=${seqno}; block_signatures_dict_serialized.size=${block_signatures_dict_serialized.size} signatures_quantity=${signatures.length}; validators_quantity=${current_validators_dict.size}`);
             console.log("Trying to get signatures with stronger signers...");
             // There's a chance of lite server returning signatures from underpowered signers. In this case
             // we try to obtain a signature set with stronger signers by querying the lite server once again.
             if (attempts > 10) {
                 return { weak_signatures_from_archival_node: true, seqno: seqno };
             }
-            return await fetch_block(ls_pair, seqno, current_validators_total_weight, current_validators_dict, next_validators_total_weight, next_validators_dict, block_raw, root_hash, file_hash, attempts + 1);
+            return await fetch_block(ls_pair, seqno, current_main_validators_total_weight, current_validators_dict, next_main_validators_total_weight, next_validators_dict, block_raw, root_hash, file_hash, attempts + 1);
         }
     }
 
@@ -741,10 +720,10 @@ export async function get_contract_setup_info(ls_pair: LSPair, seqno: number) {
 
     return beginCell()
             .storeUint(result.current_validators_time_until, 32)
-            .storeUint(result.current_validators_total_weight, 64)
+            .storeUint(result.current_main_validators_total_weight, 64)
             .storeDict(result.current_validators, Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(1 + 4 + 32 + 8))
             .storeUint(result.next_validators_time_until, 32)
-            .storeUint(result.next_validators_total_weight, 64)
+            .storeUint(result.next_main_validators_total_weight, 64)
             .storeDict(result.next_validators, Dictionary.Keys.BigUint(16), Dictionary.Values.Buffer(1 + 4 + 32 + 8))
             .storeUint(seqno, 32)
            .endCell();

@@ -20,8 +20,8 @@ let wallet_keys: KeyPair;
 let wallet_contract: OpenedContract<WalletContractV3R2>;
 let wallet_mnemonic: string[] = [];
 
-const lite_client_testnet_addr = Address.parseFriendly("kQAbPU_446k6HSRfgS5rSDMzVYeufu3TmX0AkjBAdPXIHX_b");
-const transaction_checker_testnet_addr = Address.parseFriendly("kQDCHYRPSYb2p7c9vaTB80-jCshBeLsIX29rUbKl6qPK_5XT");
+const lite_client_testnet_addr = Address.parseFriendly("kQByYIrCzbv0jqGX-8SbmqIgjZ4V2_oZCm6zyr_w5BF6r0s9");
+const transaction_checker_testnet_addr = Address.parseFriendly("kQBP5NIkNLey6-X3Sr7SHjiQHMIrqv-rYiEhU-kjTILQcRoK");
 
 let testnet_ls_pair: LSPair;
 let fastnet_ls_pair: LSPair;
@@ -122,7 +122,7 @@ program
         const current_validators_info_raw = Cell.fromBase64((await testnet_ls_pair.client.runMethod(lite_client_testnet_addr.address, "get_validators_info", Buffer.from([]), last_mc_block)).result!);
         const current_validators_info = parseTuple(current_validators_info_raw);
         // @ts-ignore
-        const [current_validators_utime_until, current_validators_total_weight, current_validators_raw_dict, next_validators_utime_until, next_validators_total_weight, next_validators_raw_dict, latest_known_epoch_block_seqno] = [Number(current_validators_info[0].value), current_validators_info[1].value, current_validators_info[2].cell, Number(current_validators_info[3].value), current_validators_info[4].value, current_validators_info[5].cell, Number(current_validators_info[6].value)];
+        const [current_validators_utime_until, current_main_validators_total_weight, current_validators_raw_dict, next_validators_utime_until, next_main_validators_total_weight, next_validators_raw_dict, latest_known_epoch_block_seqno] = [Number(current_validators_info[0].value), current_validators_info[1].value, current_validators_info[2].cell, Number(current_validators_info[3].value), current_validators_info[4].value, current_validators_info[5].cell, Number(current_validators_info[6].value)];
 
         const now = utime_now();
         if (now < next_validators_utime_until) {
@@ -189,7 +189,7 @@ program
         const current_validators_info_raw = Cell.fromBase64((await testnet_ls_pair.client.runMethod(lite_client_testnet_addr.address, "get_validators_info", Buffer.from([]), last_mc_block)).result!);
         const current_validators_info = parseTuple(current_validators_info_raw);
         // @ts-ignore
-        const [current_validators_utime_until, current_validators_total_weight, current_validators_raw_dict, next_validators_utime_until, next_validators_total_weight, next_validators_raw_dict, latest_known_epoch_block_seqno] = [Number(current_validators_info[0].value), current_validators_info[1].value, current_validators_info[2].cell, Number(current_validators_info[3].value), current_validators_info[4].value, current_validators_info[5].cell, Number(current_validators_info[6].value)];
+        const [current_validators_utime_until, current_main_validators_total_weight, current_validators_raw_dict, next_validators_utime_until, next_main_validators_total_weight, next_validators_raw_dict, latest_known_epoch_block_seqno] = [Number(current_validators_info[0].value), current_validators_info[1].value, current_validators_info[2].cell, Number(current_validators_info[3].value), current_validators_info[4].value, current_validators_info[5].cell, Number(current_validators_info[6].value)];
 
         console.log("📝 Acquiring information about block...");
         const { root_hash, file_hash } = await get_block_root_and_file_hashes(fastnet_ls_pair, seqno, -1, "-9223372036854775808");
@@ -209,7 +209,7 @@ program
             return await terminate(6);
         }
         
-        const { block, block_signatures, weak_signatures_from_archival_node, do_validators_switch_for_check_block } = await fetch_block(fastnet_ls_pair, seqno, current_validators_total_weight, current_validators, next_validators_total_weight, next_validators, block_raw, root_hash, file_hash);
+        const { block, block_signatures, weak_signatures_from_archival_node, do_validators_switch_for_check_block } = await fetch_block(fastnet_ls_pair, seqno, current_main_validators_total_weight, current_validators, next_main_validators_total_weight, next_validators, block_raw, root_hash, file_hash);
 
         if (weak_signatures_from_archival_node) {
             console.log(`⛔ Lite server has returned weak signatures for this block.`);
@@ -251,7 +251,7 @@ program
         const current_validators_info_raw = Cell.fromBase64((await testnet_ls_pair.client.runMethod(lite_client_testnet_addr.address, "get_validators_info", Buffer.from([]), last_mc_block)).result!);
         const current_validators_info = parseTuple(current_validators_info_raw);
         // @ts-ignore
-        const [current_validators_utime_until, current_validators_total_weight, current_validators_raw_dict, next_validators_utime_until, next_validators_total_weight, next_validators_raw_dict, latest_known_epoch_block_seqno] = [Number(current_validators_info[0].value), current_validators_info[1].value, current_validators_info[2].cell, Number(current_validators_info[3].value), current_validators_info[4].value, current_validators_info[5].cell, Number(current_validators_info[6].value)];
+        const [current_validators_utime_until, current_main_validators_total_weight, current_validators_raw_dict, next_validators_utime_until, next_main_validators_total_weight, next_validators_raw_dict, latest_known_epoch_block_seqno] = [Number(current_validators_info[0].value), current_validators_info[1].value, current_validators_info[2].cell, Number(current_validators_info[3].value), current_validators_info[4].value, current_validators_info[5].cell, Number(current_validators_info[6].value)];
 
         console.log("📝 Acquiring information about block...");
         const { root_hash, file_hash } = await get_block_root_and_file_hashes(fastnet_ls_pair, seqno, -1, "-9223372036854775808");
@@ -272,7 +272,7 @@ program
         }
 
         
-        const { block_signatures, account_dict_key, transaction_dict_key, transaction_cell, do_validators_switch_for_check_block } = await fetch_block_and_transaction_by_seqno(fastnet_ls_pair, seqno, current_validators_total_weight, current_validators, next_validators_total_weight, next_validators, BigInt("0x" + tx_hash));
+        const { block_signatures, account_dict_key, transaction_dict_key, transaction_cell, do_validators_switch_for_check_block } = await fetch_block_and_transaction_by_seqno(fastnet_ls_pair, seqno, current_main_validators_total_weight, current_validators, next_main_validators_total_weight, next_validators, BigInt("0x" + tx_hash));
 
         const result = await wallet_send_tx(toNano("0.2"), beginCell()
                                                             .storeUint(0x91d555f7, 32)
